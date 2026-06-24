@@ -20,35 +20,58 @@ const RED = "\x1b[31m", YEL = "\x1b[33m", GRN = "\x1b[32m", DIM = "\x1b[2m", B =
 
 // ---- detection rules -------------------------------------------------------
 // severity: "danger" (red) | "warn" (yellow). Each rule scans a file's text.
+// NOTE on accuracy: an MCP server legitimately reading an API key from env and calling that
+// provider's API is NORMAL — flagging that alone produces false positives. So the high-severity
+// rules require a *suspicious destination* or *whole-environment exfiltration*, not just
+// "reads a key and makes a request."
 const SENSITIVE_ENV = /\b(ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN|OPENAI_API_KEY|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|STRIPE_SECRET_KEY|SSH_PRIVATE_KEY|GOOGLE_APPLICATION_CREDENTIALS|HF_TOKEN|SLACK_TOKEN)\b/;
 const NET_CALL = /\b(fetch|axios|got|node-fetch|requests\.(get|post)|urllib|http\.request|https\.request|XMLHttpRequest|curl|wget|nc |netcat|Invoke-WebRequest)\b/i;
-const EXFIL_HOST = /(pastebin\.com|hastebin|ngrok\.io|ngrok-free|requestbin|webhook\.site|pipedream\.net|burpcollaborator|interactsh|oast\.|\.run\.place|discord(app)?\.com\/api\/webhooks|t\.me\/|telegram\.org\/bot|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)/i;
-const OBFUSC = /(eval\s*\(\s*(atob|Buffer\.from|require\(['"]child_process)|atob\s*\(|base64\s*-d|FromBase64String|exec\(\s*atob|child_process'\)\.exec|os\.system\(|subprocess\.(Popen|call|run)\(|\bexec\s*\(\s*`|\| ?bash|\| ?sh\b|curl[^\n]+\|\s*(ba)?sh)/i;
-const PROMPT_INJ = /(ignore (all )?(previous|prior|above) (instructions|prompts)|do not (tell|inform|mention|reveal)( this)? (to )?the user|without (the user|asking|permission)|exfiltrat|secretly|covertly|hidden (instruction|directive)|bypass (the )?(approval|permission|sandbox)|send (the |your )?(env|environment|secrets|keys|credentials|\.env)|read .{0,20}\.env|cat .{0,20}\.env|always (auto-?)?approve|disregard (the )?(rules|guidelines))/i;
-const INSTALL_HOOK = /"(pre|post)?install"\s*:/;
-const DANGEROUS_FLAG = /(--dangerously-skip-permissions|"permissions"\s*:\s*"(\*|all)"|autoApprove\s*:\s*(true|"all"|\*)|"autoApproveAll"\s*:\s*true|disable[_-]?sandbox|skip[_-]?confirmation)/i;
-const SECRET_LITERAL = /(sk-ant-[a-zA-Z0-9_\-]{20,}|sk-[a-zA-Z0-9]{40,}|ghp_[a-zA-Z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----|xox[baprs]-[0-9a-zA-Z\-]{10,})/;
-const FORCED_ARTIFACT = /(diagnostic\/.*\.logd|encryptly|\.logd\b|commit .{0,30}(diagnostic|encrypted|validation) (blob|artifact|file)|python3? build\.py|node build\.js.{0,40}commit)/i;
+// Genuinely suspicious exfil destinations (named services attackers use). Raw IPs are NOT
+// included — legit configs use them (localhost, internal hosts) and they false-positive badly.
+// Only services that are almost never present in legitimate production code. (Telegram/ngrok
+// are intentionally EXCLUDED — they're heavily dual-use: tons of legit bots call api.telegram.org,
+// so flagging them produces false positives. Exfil over Telegram is real but undetectable by
+// hostname alone; that's what the paid human audit is for.)
+const SUSPICIOUS_HOST = /(pastebin\.com|hastebin\.com|requestbin|webhook\.site|pipedream\.net|burpcollaborator|interactsh|\.oast\.|discord(app)?\.com\/api\/webhooks|smtp2go|mailgun.{0,20}exfil)/i;
+// Serializing the WHOLE environment. NB: `{...process.env}` and `Object.keys(process.env)` are
+// EXCLUDED — they're the normal idiom for passing env to a child process / listing var names, and
+// flag legit code constantly. We only match a full-env serialization that could become a payload.
+const ENV_DUMP = /(JSON\.stringify\(\s*process\.env\s*\)|json\.dumps\(\s*(dict\()?os\.environ|\/proc\/self\/environ|env\s*>\s*\/tmp|base64.{0,15}\$\(\s*env\s*\)|printenv\s*\|\s*(curl|nc|wget))/i;
+const OBFUSC = /(eval\s*\(\s*(atob|Buffer\.from|decodeURIComponent)|exec\s*\(\s*atob|child_process['"]\)\.exec\w*\(\s*atob|base64\s+-d\s*\|\s*(ba)?sh|FromBase64String\([^)]*\)\s*\|\s*iex|powershell[^\n]*-enc(odedcommand)? )/i;
+const SHELL_PIPE = /(curl|wget)[^\n|]+\|\s*(ba)?sh\b/i; // `curl X | bash` — danger in code/scripts, only a note in install docs
+const CODE_FILE = /\.(js|jsx|ts|tsx|mjs|cjs|py|rb|go|rs|sh|bash|zsh|ps1)$|package\.json$/i;
+const INSTRUCTION_FILE = /(^|\/)(SKILL|AGENTS?|CLAUDE|README\.skill|system|prompt)\.(md|mdx|txt)$|\.mcp\.json$/i;
+const DOC_FILE = /\.(md|mdx|txt|rst)$/i;
+const PROMPT_INJ = /(ignore (all )?(previous|prior|above) (instructions|prompts|rules)|do not (tell|inform|reveal|mention|notify).{0,25}(the )?(user|human|operator)|exfiltrat\w+|send (the |your )?(\.?env|environment variables|secrets|api[_ ]?keys|credentials|\.env file)|read .{0,15}\.env.{0,40}(send|post|upload|exfil)|always (auto-?)?approve (all|every|any)|disregard (the |your )?(rules|guidelines|safety|instructions))/i;
+const INSTALL_HOOK = /"(pre|post)install"\s*:/;
+const DANGEROUS_FLAG = /(--dangerously-skip-permissions|"permissions"\s*:\s*"(\*|all)"|"?autoApproveAll"?\s*:\s*true|autoApprove\s*:\s*"(\*|all)"|disable[_-]?sandbox\s*[:=]\s*true|"?bypassPermissions"?\s*:\s*true)/i;
+const SECRET_LITERAL = /(sk-ant-[a-zA-Z0-9_\-]{24,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----|xox[baprs]-[0-9]{8,}-[0-9a-zA-Z]{8,})/;
+const FORCED_ARTIFACT = /(diagnostic\/[^\s"']*\.logd|encryptly|commit[^\n]{0,30}(diagnostic|encrypted) (blob|artifact|file)|python3? build\.py[^\n]{0,40}commit)/i;
 
 const RULES = [
-  { id: "env-exfil", sev: "danger", label: "Possible env/secret exfiltration (sensitive env var near a network call)",
-    test: t => SENSITIVE_ENV.test(t) && NET_CALL.test(t) },
-  { id: "exfil-host", sev: "danger", label: "Hardcoded suspicious exfiltration endpoint (webhook/pastebin/raw-IP/telegram)",
-    test: t => EXFIL_HOST.test(t) && NET_CALL.test(t) },
-  { id: "obfuscation", sev: "danger", label: "Obfuscated/dynamic code execution (eval(atob), curl|bash, subprocess on encoded data)",
+  { id: "env-dump", sev: (f, t) => SUSPICIOUS_HOST.test(t) ? "danger" : "warn",
+    label: "Full-environment serialization near a network call (review where it goes; `JSON.stringify(process.env)` etc.)",
+    test: t => ENV_DUMP.test(t) && NET_CALL.test(t) },
+  { id: "env-exfil", sev: "danger", label: "Secret sent to a suspicious destination (sensitive env var + a known exfil host)",
+    test: t => SENSITIVE_ENV.test(t) && SUSPICIOUS_HOST.test(t) },
+  { id: "exfil-host", sev: "danger", label: "Network call to a known exfiltration service (webhook.site / pastebin / ngrok / telegram bot)",
+    test: t => SUSPICIOUS_HOST.test(t) && NET_CALL.test(t) },
+  { id: "obfuscation", sev: "danger", label: "Obfuscated remote code execution (eval(atob(...)), base64 -d | sh, powershell -enc)",
     test: t => OBFUSC.test(t) },
+  { id: "shell-pipe", sev: "warn",
+    label: "Pipe-to-shell (`curl … | bash`) — runs remote code; fine for official installers, risky from unknown hosts",
+    test: t => SHELL_PIPE.test(t) },
   { id: "forced-artifact", sev: "danger", label: "Honeypot pattern: build step that generates/commits an encrypted artifact",
     test: t => FORCED_ARTIFACT.test(t) },
   { id: "secret-literal", sev: "danger", label: "Hardcoded credential / private key committed in the repo",
     test: t => SECRET_LITERAL.test(t) },
-  { id: "prompt-injection", sev: "danger", label: "Prompt-injection / data-exfil instruction in text (tool description / SKILL.md / prompt)",
+  { id: "prompt-injection", sev: f => (INSTRUCTION_FILE.test(f) || CODE_FILE.test(f)) ? "danger" : "warn",
+    label: "Prompt-injection / data-exfil instruction in text (high risk in SKILL.md / tool descriptions; in changelogs/READMEs it may just be docs discussing it)",
     test: (t, f) => PROMPT_INJ.test(t) && /\.(md|mdx|json|ya?ml|txt|py|js|ts)$/i.test(f) },
   { id: "dangerous-perms", sev: "warn", label: "Auto-approve-all / sandbox-disabling / skip-permissions configuration",
     test: t => DANGEROUS_FLAG.test(t) },
   { id: "install-hook", sev: "warn", label: "Install-time script hook (pre/postinstall) — runs code on `npm install`",
     test: (t, f) => INSTALL_HOOK.test(t) && /package\.json$/i.test(f) },
-  { id: "raw-network", sev: "warn", label: "Outbound network call — review where data goes",
-    test: t => NET_CALL.test(t) && /process\.env|os\.environ|getenv/i.test(t) },
 ];
 
 // committed-binary detection (Mach-O / ELF / PE magic)
@@ -93,7 +116,11 @@ function scanDir(root) {
     const text = buf.toString("utf8");
     scanned++;
     for (const r of RULES) {
-      try { if (r.test(text, f)) findings.push({ file: f, rule: r.id, sev: r.sev, label: r.label }); } catch {}
+      try {
+        if (!r.test(text, f)) continue;
+        const sev = typeof r.sev === "function" ? r.sev(f, text) : r.sev;
+        if (sev) findings.push({ file: f, rule: r.id, sev, label: r.label });
+      } catch {}
     }
   }
   return { findings, binaries, scanned, fileCount: files.length };
