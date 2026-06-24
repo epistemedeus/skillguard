@@ -1,6 +1,6 @@
 {
   "name": "skillguard",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Static security scanner for Claude Code skills, plugins, and MCP servers. Detects env-var exfiltration, install-time shell hooks, prompt injection, committed binaries, and auto-approve configs. Never executes the scanned code.",
   "type": "module",
   "bin": {

@@ -190,6 +190,14 @@ function main() {
   console.log(verdict);
   console.log(`${DIM}SkillGuard does static analysis only; it never executes the scanned code. Heuristics can miss novel attacks.\n` +
     `Want continuous re-scanning on every upstream release + a deeper manual audit? → https://samedaydesk.com/skillguard${R}\n`);
+  if (process.argv.includes("--badge")) {
+    if (res.verdict === "clean") {
+      console.log(`${B}You passed — show it in your README:${R}\n` +
+        `[![SkillGuard: no known malware](https://img.shields.io/badge/SkillGuard-no%20known%20malware-2ea44f)](https://github.com/epistemedeus/skillguard)\n`);
+    } else {
+      console.log(`${DIM}--badge: only a clean scan earns a badge; fix the findings above first.${R}\n`);
+    }
+  }
   process.exit(res.verdict === "dangerous" ? 3 : res.verdict === "suspicious" ? 2 : 0);
 }
 

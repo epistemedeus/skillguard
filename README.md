@@ -77,6 +77,18 @@ Give your agent the ability to vet a skill/MCP server before installing it. Add 
 
 It exposes one tool, `scan_skill(target)`, where `target` is a local path or a git/GitHub URL. Your agent can then check anything it's about to install. (Static-only — it never runs the scanned code.)
 
+## Show that you passed
+
+If your skill or MCP server comes back clean, earn a badge for your README:
+
+```bash
+npx github:epistemedeus/skillguard . --badge
+```
+
+It prints a Markdown badge you can paste in — a signal to your users that you ran a malware scan:
+
+[![SkillGuard: no known malware](https://img.shields.io/badge/SkillGuard-no%20known%20malware-2ea44f)](https://github.com/epistemedeus/skillguard)
+
 ## Free vs. paid
 
 The CLI is **free and MIT-licensed** — run it as often as you like. If you install third-party skills/MCPs regularly and want to stop worrying:
