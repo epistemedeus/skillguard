@@ -54,10 +54,15 @@ SkillGuard does **static analysis only**. It clones with `git clone` (hooks disa
 
 Exit code: `0` clean · `2` suspicious · `3` dangerous — so you can gate CI on it.
 
-## Use it in CI
+## Use it in CI (GitHub Action)
+
+Gate your CI on skill/MCP supply-chain safety:
 
 ```yaml
-- run: npx github:epistemedeus/skillguard ${{ github.workspace }}
+- uses: epistemedeus/skillguard@v1
+  with:
+    path: .            # path or git URL to scan
+    fail-on: dangerous # or "suspicious"
 ```
 
 ## Use it as an MCP server

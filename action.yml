@@ -1,0 +1,21 @@
+name: "SkillGuard — scan skills/MCP servers for malware"
+description: "Static security scan for Claude Code skills, plugins, and MCP servers. Fails CI on dangerous findings. Never executes the scanned code."
+branding: { icon: "shield", color: "red" }
+inputs:
+  path:
+    description: "Path or git URL to scan (defaults to the checked-out repo)."
+    required: false
+    default: "."
+  fail-on:
+    description: "Fail the job on 'dangerous' (default) or also on 'suspicious'."
+    required: false
+    default: "dangerous"
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        node "${{ github.action_path }}/index.js" "${{ inputs.path }}"; code=$?
+        if [ "$code" = "3" ]; then echo "::error::SkillGuard found DANGEROUS patterns"; exit 1; fi
+        if [ "$code" = "2" ] && [ "${{ inputs.fail-on }}" = "suspicious" ]; then echo "::error::SkillGuard found suspicious patterns"; exit 1; fi
+        exit 0
