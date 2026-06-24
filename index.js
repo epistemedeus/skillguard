@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const RED = "\x1b[31m", YEL = "\x1b[33m", GRN = "\x1b[32m", DIM = "\x1b[2m", B = "\x1b[1m", R = "\x1b[0m", CY = "\x1b[36m";
 
@@ -128,55 +129,69 @@ function scanDir(root) {
 
 function rel(root, f) { return path.relative(root, f) || path.basename(f); }
 
+// Core analysis, reusable by the CLI and the MCP server. Clones a URL statically (no install),
+// scans, cleans up, and returns a structured result. Throws on clone/path errors.
+export function analyze(arg) {
+  const isUrl = /^(https?:\/\/|git@)/.test(arg);
+  let root = arg, tmp = null;
+  if (isUrl) {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skillguard-"));
+    try {
+      execFileSync("git", ["-c", "core.hooksPath=/dev/null", "clone", "--depth", "1", arg, tmp],
+        { stdio: ["ignore", "ignore", "pipe"], timeout: 60000 });
+      root = tmp;
+    } catch (e) {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+      throw new Error(`Could not clone ${arg}: ${String(e.message).slice(0, 120)}`);
+    }
+  }
+  if (!fs.existsSync(root)) {
+    if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    throw new Error(`Path not found: ${root}`);
+  }
+  const { findings, scanned, fileCount } = scanDir(root);
+  const norm = findings.map(x => ({ file: rel(root, x.file), rule: x.rule, sev: x.sev, label: x.label }));
+  if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  const dangers = norm.filter(f => f.sev === "danger");
+  const warns = norm.filter(f => f.sev === "warn");
+  const verdict = dangers.length ? "dangerous" : warns.length ? "suspicious" : "clean";
+  return { target: isUrl ? arg : path.resolve(arg), scanned, fileCount, verdict, dangers, warns, findings: norm };
+}
+
 function main() {
   const arg = process.argv[2];
+  if (arg === "mcp") { import("./mcp.js"); return; } // run as an MCP server (stdio)
   if (!arg) {
     console.error(`${B}SkillGuard${R} — static security scanner for Claude Code skills, plugins & MCP servers.\n` +
       `Usage: skillguard <path-or-git-url>\n  npx github:epistemedeus/skillguard https://github.com/owner/repo\n  npx github:epistemedeus/skillguard ./my-skill`);
     process.exit(64);
   }
-  let root = arg, tmp = null;
-  const isUrl = /^(https?:\/\/|git@)/.test(arg);
-  if (isUrl) {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skillguard-"));
-    process.stderr.write(`${DIM}Cloning (static, no install)…${R}\n`);
-    try {
-      // --depth 1, and disable any clone-time hooks; we never run install/build.
-      execFileSync("git", ["-c", "core.hooksPath=/dev/null", "clone", "--depth", "1", arg, tmp],
-        { stdio: ["ignore", "ignore", "pipe"], timeout: 60000 });
-      root = tmp;
-    } catch (e) { console.error(`${RED}Could not clone ${arg}${R}: ${String(e.message).slice(0, 120)}`); process.exit(65); }
-  }
-  if (!fs.existsSync(root)) { console.error(`${RED}Path not found: ${root}${R}`); process.exit(66); }
+  if (/^(https?:\/\/|git@)/.test(arg)) process.stderr.write(`${DIM}Cloning (static, no install)…${R}\n`);
+  let res;
+  try { res = analyze(arg); }
+  catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
 
-  const { findings, binaries, scanned, fileCount } = scanDir(root);
-  const dangers = findings.filter(f => f.sev === "danger");
-  const warns = findings.filter(f => f.sev === "warn");
-
-  console.log(`\n${B}SkillGuard report${R}  ${DIM}· ${scanned} text files scanned, ${fileCount} total${R}`);
-  console.log(`${DIM}target: ${isUrl ? arg : path.resolve(root)}${R}\n`);
-
+  console.log(`\n${B}SkillGuard report${R}  ${DIM}· ${res.scanned} text files scanned, ${res.fileCount} total${R}`);
+  console.log(`${DIM}target: ${res.target}${R}\n`);
   const group = (list) => {
     const byFile = {};
-    for (const x of list) (byFile[rel(root, x.file)] ||= []).push(x);
+    for (const x of list) (byFile[x.file] ||= []).push(x);
     for (const [file, fs_] of Object.entries(byFile)) {
       console.log(`  ${CY}${file}${R}`);
       for (const x of fs_) console.log(`    ${x.sev === "danger" ? RED + "■" : YEL + "▲"} ${x.label}${R} ${DIM}[${x.rule}]${R}`);
     }
   };
+  if (res.dangers.length) { console.log(`${RED}${B}DANGER (${res.dangers.length})${R}`); group(res.dangers); console.log(""); }
+  if (res.warns.length) { console.log(`${YEL}${B}WARNINGS (${res.warns.length})${R}`); group(res.warns); console.log(""); }
 
-  if (dangers.length) { console.log(`${RED}${B}DANGER (${dangers.length})${R}`); group(dangers); console.log(""); }
-  if (warns.length) { console.log(`${YEL}${B}WARNINGS (${warns.length})${R}`); group(warns); console.log(""); }
-
-  let verdict, code;
-  if (dangers.length) { verdict = `${RED}${B}✗ DANGEROUS${R} — do NOT install without reviewing the flagged files.`; code = 3; }
-  else if (warns.length) { verdict = `${YEL}${B}▲ SUSPICIOUS${R} — review the warnings before trusting this.`; code = 2; }
-  else { verdict = `${GRN}${B}✓ No known-malicious patterns found${R} — still review code from untrusted authors.`; code = 0; }
+  const verdict = res.verdict === "dangerous" ? `${RED}${B}✗ DANGEROUS${R} — do NOT install without reviewing the flagged files.`
+    : res.verdict === "suspicious" ? `${YEL}${B}▲ SUSPICIOUS${R} — review the warnings before trusting this.`
+    : `${GRN}${B}✓ No known-malicious patterns found${R} — still review code from untrusted authors.`;
   console.log(verdict);
   console.log(`${DIM}SkillGuard does static analysis only; it never executes the scanned code. Heuristics can miss novel attacks.\n` +
     `Want continuous re-scanning on every upstream release + a deeper manual audit? → https://samedaydesk.com/skillguard${R}\n`);
-
-  if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-  process.exit(code);
+  process.exit(res.verdict === "dangerous" ? 3 : res.verdict === "suspicious" ? 2 : 0);
 }
-main();
+
+// Run the CLI only when invoked directly (so the MCP server can import analyze()).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

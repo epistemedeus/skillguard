@@ -60,6 +60,23 @@ Exit code: `0` clean · `2` suspicious · `3` dangerous — so you can gate CI o
 - run: npx github:epistemedeus/skillguard ${{ github.workspace }}
 ```
 
+## Use it as an MCP server
+
+Give your agent the ability to vet a skill/MCP server before installing it. Add to your Claude Code / MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "skillguard": {
+      "command": "npx",
+      "args": ["-y", "github:epistemedeus/skillguard", "mcp"]
+    }
+  }
+}
+```
+
+It exposes one tool, `scan_skill(target)`, where `target` is a local path or a git/GitHub URL. Your agent can then check anything it's about to install. (Static-only — it never runs the scanned code.)
+
 ## Free vs. paid
 
 The CLI is **free and MIT-licensed** — run it as often as you like. If you install third-party skills/MCPs regularly and want to stop worrying:
