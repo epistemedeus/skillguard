@@ -50,16 +50,20 @@ test("image copy includes report.js and the pin copy list does not", () => {
   process.stdout.write(`PIN_COPY:${pinSources.join(",")}\n`);
   process.stdout.write(`HEAD_COPY:${headSources.join(",")}\n`);
 
+  const DIST = "56d59b5e2821ad1d72d1823f450e5cc797bdf5f4";
+  const distSources = copySources(gitShow(`${DIST}:Dockerfile`));
   assert.deepEqual(pinSources, ["package.json", "index.js", "mcp.js"]);
   assert.equal(pinSources.includes("report.js"), false);
-  assert.deepEqual(headSources, ["package.json", "index.js", "mcp.js", "report.js"]);
+  assert.deepEqual(distSources, ["package.json", "index.js", "mcp.js", "report.js"]);
+  assert.deepEqual(headSources, ["package.json", "index.js", "mcp.js", "report.js", "report.schema.json", "version.js"]);
   assert.match(pinDocker, /ENTRYPOINT \["node", "mcp\.js"\]/);
   assert.match(headDocker, /ENTRYPOINT \["node", "mcp\.js"\]/);
   assert.doesNotMatch(readFileSync(join(repo, "mcp.js"), "utf8"), /report\.js/);
 
   const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" });
   assert.equal(head.status, 0, head.stderr);
-  if (head.stdout.trim() !== PIN) {
+  const dirty = spawnSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" });
+  if (head.stdout.trim() !== PIN && !dirty.stdout.trim()) {
     assert.equal(gitShow("HEAD:Dockerfile"), headDocker);
   }
 

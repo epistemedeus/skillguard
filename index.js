@@ -19,6 +19,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { escapeTerminal, redactUrl } from "./version.js";
 
 const RED = "\x1b[31m", YEL = "\x1b[33m", GRN = "\x1b[32m", DIM = "\x1b[2m", B = "\x1b[1m", R = "\x1b[0m", CY = "\x1b[36m";
 
@@ -101,10 +102,36 @@ function walk(dir, out = []) {
     }
     if (SKIP_DIRS.has(e.name)) continue;
     const p = path.join(dir, e.name);
+    if (e.isSymbolicLink()) { out.push(p); continue; }
     if (e.isDirectory()) walk(p, out);
     else out.push(p);
   }
   return out;
+}
+
+function symlinkEscapes(root, linkPath) {
+  let dest;
+  try {
+    dest = fs.realpathSync(linkPath);
+  } catch {
+    try { dest = path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath)); }
+    catch { return true; }
+  }
+  let realRoot;
+  try { realRoot = fs.realpathSync(root); }
+  catch { realRoot = path.resolve(root); }
+  const relToRoot = path.relative(realRoot, dest);
+  return relToRoot !== "" && (relToRoot.startsWith("..") || path.isAbsolute(relToRoot));
+}
+
+export function publicTarget(arg) {
+  if (/^(https?:\/\/|git@)/.test(arg)) return redactUrl(arg);
+  const abs = path.resolve(arg);
+  const relToCwd = path.relative(process.cwd(), abs);
+  if (relToCwd && !relToCwd.startsWith("..") && !path.isAbsolute(relToCwd)) {
+    return relToCwd.split(path.sep).join("/");
+  }
+  return path.basename(abs) || "target";
 }
 
 function scanDir(root) {
@@ -112,6 +139,15 @@ function scanDir(root) {
   const findings = [];
   let binaries = 0, scanned = 0;
   for (const f of files) {
+    let listed;
+    try { listed = fs.lstatSync(f); } catch { continue; }
+    if (listed.isSymbolicLink()) {
+      if (symlinkEscapes(root, f)) {
+        findings.push({ file: f, rule: "symlink-escape", sev: "warn",
+          label: "Symlink resolves outside the scan root and was not read" });
+      }
+      continue;
+    }
     let buf;
     try { buf = fs.readFileSync(f); } catch { continue; }
     if (looksBinary(buf)) { binaries++; findings.push({ file: f, rule: "committed-binary", sev: "danger",
@@ -145,20 +181,20 @@ export function analyze(arg) {
       root = tmp;
     } catch (e) {
       try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-      throw new Error(`Could not clone ${arg}: ${String(e.message).slice(0, 120)}`);
+      throw new Error(`Could not clone ${redactUrl(arg)}: ${String(e.message).slice(0, 120)}`);
     }
   }
   if (!fs.existsSync(root)) {
     if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-    throw new Error(`Path not found: ${root}`);
+    throw new Error(`Path not found: ${publicTarget(arg)}`);
   }
   const { findings, scanned, fileCount } = scanDir(root);
-  const norm = findings.map(x => ({ file: rel(root, x.file), rule: x.rule, sev: x.sev, label: x.label }));
+  const norm = findings.map(x => ({ file: escapeTerminal(rel(root, x.file)), rule: x.rule, sev: x.sev, label: x.label }));
   if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
   const dangers = norm.filter(f => f.sev === "danger");
   const warns = norm.filter(f => f.sev === "warn");
   const verdict = dangers.length ? "dangerous" : warns.length ? "suspicious" : "clean";
-  return { target: isUrl ? arg : path.resolve(arg), scanned, fileCount, verdict, dangers, warns, findings: norm };
+  return { target: escapeTerminal(publicTarget(arg)), scanned, fileCount, verdict, dangers, warns, findings: norm };
 }
 
 function verdictExit(verdict) {
@@ -205,12 +241,12 @@ function parseArgs(argv) {
 
 function printHuman(res, badge) {
   console.log(`\n${B}SkillGuard report${R}  ${DIM}· ${res.scanned} text files scanned, ${res.fileCount} total${R}`);
-  console.log(`${DIM}target: ${res.target}${R}\n`);
+  console.log(`${DIM}target: ${escapeTerminal(res.target)}${R}\n`);
   const group = (list) => {
     const byFile = {};
     for (const x of list) (byFile[x.file] ||= []).push(x);
     for (const [file, fs_] of Object.entries(byFile)) {
-      console.log(`  ${CY}${file}${R}`);
+      console.log(`  ${CY}${escapeTerminal(file)}${R}`);
       for (const x of fs_) console.log(`    ${x.sev === "danger" ? RED + "■" : YEL + "▲"} ${x.label}${R} ${DIM}[${x.rule}]${R}`);
     }
   };

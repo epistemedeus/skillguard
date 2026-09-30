@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.epistemedeus/skillguard",
   "description": "Static security scanner for Claude Code skills, plugins, and MCP servers — vet a dependency for malware before you install it. Never executes the scanned code.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "repository": { "url": "https://github.com/epistemedeus/skillguard", "source": "github" },
   "packages": [
     {
       "registryType": "github",
       "identifier": "epistemedeus/skillguard",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "transport": { "type": "stdio" },
       "runtimeHint": "npx"
     }

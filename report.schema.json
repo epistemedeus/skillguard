@@ -19,7 +19,11 @@
   ],
   "properties": {
     "schema": { "const": "skillguard.report.v1" },
-    "generatedAt": { "type": "string", "minLength": 20 },
+    "generatedAt": {
+      "type": "string",
+      "minLength": 20,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
     "scanner": {
       "type": "object",
       "additionalProperties": false,
@@ -82,5 +86,37 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "verdict": { "const": "clean" } }, "required": ["verdict"] },
+      "then": {
+        "properties": {
+          "exitCode": { "const": 0 },
+          "findings": { "maxItems": 0 },
+          "correction": { "properties": { "state": { "const": "none" } }, "required": ["state"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "suspicious" } }, "required": ["verdict"] },
+      "then": {
+        "properties": {
+          "exitCode": { "const": 2 },
+          "findings": { "minItems": 1 },
+          "correction": { "properties": { "state": { "const": "review" } }, "required": ["state"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "dangerous" } }, "required": ["verdict"] },
+      "then": {
+        "properties": {
+          "exitCode": { "const": 3 },
+          "findings": { "minItems": 1 },
+          "correction": { "properties": { "state": { "const": "required" } }, "required": ["state"] }
+        }
+      }
+    }
+  ]
 }

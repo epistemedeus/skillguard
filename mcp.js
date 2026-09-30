@@ -8,6 +8,7 @@
 //   (or run the `skillguard-mcp` bin directly)
 
 import { analyze } from "./index.js";
+import { scannerVersion } from "./version.js";
 import readline from "node:readline";
 
 const send = (m) => process.stdout.write(JSON.stringify(m) + "\n");
@@ -25,6 +26,7 @@ const TOOL = {
 };
 
 const rl = readline.createInterface({ input: process.stdin });
+rl.on("close", () => process.exit(0));
 rl.on("line", (line) => {
   line = line.trim();
   if (!line) return;
@@ -36,7 +38,7 @@ rl.on("line", (line) => {
     return ok(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "skillguard", version: "1.2.0" },
+      serverInfo: { name: "skillguard", version: scannerVersion() },
       instructions: "Use scan_skill to vet a Claude Code skill, plugin, or MCP server before installing it.",
     });
   }
