@@ -20,6 +20,8 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { escapeTerminal, redactUrl } from "./version.js";
+import { labelFor } from "./rules.js";
+import { classifySecretText } from "./secrets.js";
 
 const RED = "\x1b[31m", YEL = "\x1b[33m", GRN = "\x1b[32m", DIM = "\x1b[2m", B = "\x1b[1m", R = "\x1b[0m", CY = "\x1b[36m";
 
@@ -50,7 +52,6 @@ const DOC_FILE = /\.(md|mdx|txt|rst)$/i;
 const PROMPT_INJ = /(ignore (all )?(previous|prior|above) (instructions|prompts|rules)|do not (tell|inform|reveal|mention|notify).{0,25}(the )?(user|human|operator)|exfiltrat\w+|send (the |your )?(\.?env|environment variables|secrets|api[_ ]?keys|credentials|\.env file)|read .{0,15}\.env.{0,40}(send|post|upload|exfil)|always (auto-?)?approve (all|every|any)|disregard (the |your )?(rules|guidelines|safety|instructions))/i;
 const INSTALL_HOOK = /"(pre|post)install"\s*:/;
 const DANGEROUS_FLAG = /(--dangerously-skip-permissions|"permissions"\s*:\s*"(\*|all)"|"?autoApproveAll"?\s*:\s*true|autoApprove\s*:\s*"(\*|all)"|disable[_-]?sandbox\s*[:=]\s*true|"?bypassPermissions"?\s*:\s*true)/i;
-const SECRET_LITERAL = /(sk-ant-[a-zA-Z0-9_\-]{24,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----|xox[baprs]-[0-9]{8,}-[0-9a-zA-Z]{8,})/;
 const FORCED_ARTIFACT = /(diagnostic\/[^\s"']*\.logd|encryptly|commit[^\n]{0,30}(diagnostic|encrypted) (blob|artifact|file)|python3? build\.py[^\n]{0,40}commit)/i;
 
 const RULES = [
@@ -69,7 +70,7 @@ const RULES = [
   { id: "forced-artifact", sev: "danger", label: "Honeypot pattern: build step that generates/commits an encrypted artifact",
     test: t => FORCED_ARTIFACT.test(t) },
   { id: "secret-literal", sev: "danger", label: "Hardcoded credential / private key committed in the repo",
-    test: t => SECRET_LITERAL.test(t) },
+    test: (t, f) => classifySecretText(t, f).class === "real-secret" },
   { id: "prompt-injection", sev: f => (INSTRUCTION_FILE.test(f) || CODE_FILE.test(f)) ? "danger" : "warn",
     label: "Prompt-injection / data-exfil instruction in text (high risk in SKILL.md / tool descriptions; in changelogs/READMEs it may just be docs discussing it)",
     test: (t, f) => PROMPT_INJ.test(t) && /\.(md|mdx|json|ya?ml|txt|py|js|ts)$/i.test(f) },
@@ -144,14 +145,14 @@ function scanDir(root) {
     if (listed.isSymbolicLink()) {
       if (symlinkEscapes(root, f)) {
         findings.push({ file: f, rule: "symlink-escape", sev: "warn",
-          label: "Symlink resolves outside the scan root and was not read" });
+          label: labelFor("symlink-escape") });
       }
       continue;
     }
     let buf;
     try { buf = fs.readFileSync(f); } catch { continue; }
     if (looksBinary(buf)) { binaries++; findings.push({ file: f, rule: "committed-binary", sev: "danger",
-      label: "Committed executable binary (a compiled artifact that the build may run)" }); continue; }
+      label: labelFor("committed-binary") }); continue; }
     if (!TEXT_EXT.test(f) && buf.length > 200000) continue; // skip big non-text
     const text = buf.toString("utf8");
     scanned++;
@@ -159,7 +160,7 @@ function scanDir(root) {
       try {
         if (!r.test(text, f)) continue;
         const sev = typeof r.sev === "function" ? r.sev(f, text) : r.sev;
-        if (sev) findings.push({ file: f, rule: r.id, sev, label: r.label });
+        if (sev) findings.push({ file: f, rule: r.id, sev, label: labelFor(r.id) });
       } catch {}
     }
   }
@@ -284,13 +285,15 @@ async function main() {
       printUsage();
       process.exit(64);
     }
-    const { readReport, formatRetrieval, reportToJson } = await import("./report.js");
+    const { readReport, formatRetrieval, reportToJson, UNVERIFIED_EXIT, UNVERIFIED_LABEL } = await import("./report.js");
     let report;
     try { report = readReport(parsed.showReport); }
     catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
-    if (parsed.json) process.stdout.write(reportToJson(report));
-    else process.stdout.write(formatRetrieval(report));
-    process.exit(report.exitCode);
+    if (parsed.json) {
+      process.stderr.write(`${UNVERIFIED_LABEL}\n`);
+      process.stdout.write(reportToJson(report));
+    } else process.stdout.write(formatRetrieval(report, parsed.showReport));
+    process.exit(UNVERIFIED_EXIT);
   }
 
   if (!parsed.target) {

@@ -1,41 +1,33 @@
 // Scoped report delivery for the SkillGuard CLI.
 // Turns an existing analyze() result into skillguard.report.v1 JSON.
 // Does not score, does not scan, and does not execute the scanned tree.
-// A stored rescan command is accepted only when it is the canonical argv line.
-// That line is never passed to a shell.
+// --show-report is an unverified local viewer. It does not rescan, and the
+// stored verdict is not the process exit. Correction text and the rescan line
+// are derived from the rule id and the target. The stored rescan object is
+// only { derived: true } and is never passed to a shell.
 
 import fs from "node:fs";
 import path from "node:path";
+import { RULE_CATALOG, correctionFor, labelFor, ruleById } from "./rules.js";
 import { escapeTerminal, scannerVersion } from "./version.js";
 
 export const SCHEMA_ID = "skillguard.report.v1";
+export const UNVERIFIED_EXIT = 66;
+export const UNVERIFIED_LABEL = "unverified: local report viewer. This process did not scan the target. The stored verdict is not a process result.";
+
+export { correctionFor, labelFor };
 
 const VERDICT_EXIT = { clean: 0, suspicious: 2, dangerous: 3 };
 const VERDICT_STATE = { clean: "none", suspicious: "review", dangerous: "required" };
 const GENERATED_AT = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$";
 const GENERATED_AT_RE = new RegExp(GENERATED_AT);
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
-
-const CORRECTIONS = {
-  "env-dump": "Remove full-environment serialization from the network path, or remove the network call. Then re-scan this target.",
-  "env-exfil": "Remove the sensitive environment name from any file that also names a known exfil host. Then re-scan this target.",
-  "exfil-host": "Remove the network call that targets a known exfil host. Then re-scan this target.",
-  "obfuscation": "Remove decoded or encoded command execution from this file. Then re-scan this target.",
-  "shell-pipe": "Replace the pipe-to-shell with a reviewed installer, or delete it. Then re-scan this target.",
-  "forced-artifact": "Remove the honeypot build step from this file. Then re-scan this target.",
-  "secret-literal": "Rotate the credential and delete the literal from this file. Then re-scan this target.",
-  "prompt-injection": "Remove text that overrides earlier operator instructions or tells the agent to hide its actions. Then re-scan this target.",
-  "dangerous-perms": "Remove auto-approve-all, sandbox bypass, or skip-permissions settings. Then re-scan this target.",
-  "install-hook": "Remove the install-time script hook, or move it to a manual documented step. Then re-scan this target.",
-  "committed-binary": "Remove the committed executable from the tree. Then re-scan this target.",
-  "symlink-escape": "Remove the symlink that resolves outside the scanned tree. The scanner does not read that target. Then re-scan.",
-};
+const SAFE_TEXT = "^(?!/)[^\\u0000-\\u001f\\u007f-\\u009f]+$";
 
 const REPORT_KEYS = ["schema", "generatedAt", "scanner", "target", "scanned", "fileCount", "verdict", "exitCode", "blanketSafetyScore", "findings", "correction"];
 const SCANNER_KEYS = ["name", "version", "staticOnly", "executedTarget"];
-const FINDING_KEYS = ["file", "rule", "severity", "label", "correction"];
-const CORRECTION_KEYS = ["state", "summary", "steps", "rescan"];
-const STEP_KEYS = ["file", "rule", "action"];
+const FINDING_KEYS = ["file", "rule", "severity"];
+const CORRECTION_KEYS = ["state", "summary", "rescan"];
 
 const SUMMARIES = {
   none: "No flagged files. Re-scan after the tree changes. This report is not a safety score.",
@@ -49,32 +41,155 @@ export function quoteArg(value) {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
+export function displayReportPath(reportPath) {
+  const abs = path.resolve(String(reportPath || "skillguard-report.json"));
+  const rel = path.relative(process.cwd(), abs);
+  if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return rel.split(path.sep).join("/");
+  return path.basename(abs) || "skillguard-report.json";
+}
+
 export function canonicalRescan(target, reportPath) {
-  return `node index.js ${quoteArg(target)} --report ${quoteArg(reportPath)}`;
+  return `node index.js ${quoteArg(target)} --report ${quoteArg(displayReportPath(reportPath))}`;
 }
 
-function unquoteArg(token) {
-  if (/^[A-Za-z0-9_./:=@+-]+$/.test(token)) return token;
-  if (token.length >= 2 && token.startsWith("'") && token.endsWith("'")) {
-    const body = token.slice(1, -1);
-    if (body.includes("'") || CONTROL_RE.test(body) || /[;&|$`]/.test(body)) return null;
-    return body;
-  }
-  return null;
+export function derivedSteps(findings) {
+  return (findings || []).map((finding) => ({
+    file: finding.file,
+    rule: finding.rule,
+    action: correctionFor(finding.rule),
+  }));
 }
 
-export function boundRescan(command, target) {
-  if (typeof command !== "string" || typeof target !== "string") return null;
-  const prefix = `node index.js ${quoteArg(target)} --report `;
-  if (!command.startsWith(prefix)) return null;
-  const reportPath = unquoteArg(command.slice(prefix.length));
-  if (reportPath == null || reportPath.length === 0) return null;
-  if (canonicalRescan(target, reportPath) !== command) return null;
-  return reportPath;
+function severitySchema(rule) {
+  if (rule.severities.length === 1) return { const: rule.severities[0] };
+  return { enum: [...rule.severities] };
 }
 
-export function correctionFor(rule) {
-  return CORRECTIONS[rule] || "Review this file and remove the flagged pattern, then re-scan this target.";
+function findingSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: [...FINDING_KEYS],
+    properties: {
+      file: { type: "string", minLength: 1, pattern: SAFE_TEXT },
+      rule: { enum: RULE_CATALOG.map((rule) => rule.id) },
+      severity: { enum: ["danger", "warn"] },
+    },
+    allOf: RULE_CATALOG.map((rule) => ({
+      if: { properties: { rule: { const: rule.id } }, required: ["rule"] },
+      then: { properties: { severity: severitySchema(rule) } },
+    })),
+  };
+}
+
+function verdictBranch(verdict, findings) {
+  const state = VERDICT_STATE[verdict];
+  return {
+    if: { properties: { verdict: { const: verdict } }, required: ["verdict"] },
+    then: {
+      properties: {
+        exitCode: { const: VERDICT_EXIT[verdict] },
+        findings,
+        correction: {
+          properties: {
+            state: { const: state },
+            summary: { const: SUMMARIES[state] },
+          },
+          required: ["state", "summary"],
+        },
+      },
+    },
+  };
+}
+
+const dangerFinding = {
+  type: "object",
+  properties: { severity: { const: "danger" } },
+  required: ["severity"],
+};
+const warnFinding = {
+  type: "object",
+  properties: { severity: { const: "warn" } },
+  required: ["severity"],
+};
+
+export function buildReportSchema(version = scannerVersion()) {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: SCHEMA_ID,
+    title: "SkillGuard scoped report",
+    type: "object",
+    additionalProperties: false,
+    required: [...REPORT_KEYS],
+    properties: {
+      schema: { const: SCHEMA_ID },
+      generatedAt: { type: "string", minLength: 20, pattern: GENERATED_AT },
+      scanner: {
+        type: "object",
+        additionalProperties: false,
+        required: [...SCANNER_KEYS],
+        properties: {
+          name: { const: "skillguard" },
+          version: { const: version },
+          staticOnly: { const: true },
+          executedTarget: { const: false },
+        },
+      },
+      target: { type: "string", minLength: 1, pattern: SAFE_TEXT },
+      scanned: { type: "integer", minimum: 0 },
+      fileCount: { type: "integer", minimum: 0 },
+      verdict: { enum: ["clean", "suspicious", "dangerous"] },
+      exitCode: { enum: [0, 2, 3] },
+      blanketSafetyScore: { type: "null" },
+      findings: { type: "array", items: findingSchema() },
+      correction: {
+        type: "object",
+        additionalProperties: false,
+        required: [...CORRECTION_KEYS],
+        properties: {
+          state: { enum: ["none", "review", "required"] },
+          summary: { type: "string", minLength: 1 },
+          rescan: {
+            type: "object",
+            additionalProperties: false,
+            required: ["derived"],
+            properties: { derived: { const: true } },
+          },
+        },
+      },
+    },
+    allOf: [
+      verdictBranch("clean", { maxItems: 0 }),
+      verdictBranch("suspicious", {
+        minItems: 1,
+        contains: warnFinding,
+        not: { contains: dangerFinding },
+      }),
+      verdictBranch("dangerous", {
+        minItems: 1,
+        contains: dangerFinding,
+      }),
+      {
+        if: { properties: { findings: { contains: dangerFinding } }, required: ["findings"] },
+        then: { properties: { verdict: { const: "dangerous" } } },
+      },
+      {
+        if: {
+          properties: { findings: { contains: warnFinding, not: { contains: dangerFinding } } },
+          required: ["findings"],
+        },
+        then: { properties: { verdict: { const: "suspicious" } } },
+      },
+      {
+        if: { properties: { findings: { maxItems: 0 } }, required: ["findings"] },
+        then: { properties: { verdict: { const: "clean" } } },
+      },
+    ],
+  };
+}
+
+export function schemaDocument() {
+  return `${JSON.stringify(buildReportSchema(scannerVersion()), null, 2)}\n`;
 }
 
 function isObject(value) {
@@ -94,41 +209,18 @@ function plain(value, label) {
   return null;
 }
 
-export function schemaParityProblems(schema) {
-  const problems = [];
-  if (!schema || schema.$id !== SCHEMA_ID) problems.push("schema id");
-  if (schema?.additionalProperties !== false) problems.push("additionalProperties");
-  if (schema?.properties?.blanketSafetyScore?.type !== "null") problems.push("blanketSafetyScore");
-  if (schema?.properties?.generatedAt?.pattern !== GENERATED_AT) problems.push("generatedAt");
-  if (schema?.properties?.scanner?.properties?.staticOnly?.const !== true) problems.push("staticOnly");
-  if (schema?.properties?.scanner?.properties?.executedTarget?.const !== false) problems.push("executedTarget");
-  if (JSON.stringify(schema?.properties?.verdict?.enum) !== JSON.stringify(["clean", "suspicious", "dangerous"])) {
-    problems.push("verdict enum");
-  }
-  if (JSON.stringify(schema?.properties?.exitCode?.enum) !== JSON.stringify([0, 2, 3])) problems.push("exitCode enum");
-  if (JSON.stringify([...(schema?.required || [])].sort()) !== JSON.stringify([...REPORT_KEYS].sort())) {
-    problems.push("required keys");
-  }
-  if (!Array.isArray(schema?.allOf) || schema.allOf.length !== 3) problems.push("allOf");
-  else {
-    for (const branch of schema.allOf) {
-      const verdict = branch?.if?.properties?.verdict?.const;
-      const exitCode = branch?.then?.properties?.exitCode?.const;
-      const state = branch?.then?.properties?.correction?.properties?.state?.const;
-      if (VERDICT_EXIT[verdict] !== exitCode) problems.push(`exit for ${verdict}`);
-      if (VERDICT_STATE[verdict] !== state) problems.push(`state for ${verdict}`);
-      if (verdict === "clean" && branch?.then?.properties?.findings?.maxItems !== 0) problems.push("clean findings");
-    }
-  }
-  return problems;
+function safeScope(value, label) {
+  const text = plain(value, label);
+  if (text) return text;
+  if (value.startsWith("/")) return `${label} must not be an absolute path`;
+  return null;
 }
 
 let schemaReady = false;
 function ensureSchemaParity() {
   if (schemaReady) return;
-  const schema = JSON.parse(fs.readFileSync(new URL("./report.schema.json", import.meta.url), "utf8"));
-  const problems = schemaParityProblems(schema);
-  if (problems.length) throw new Error(`Schema/runtime mismatch: ${problems.join(", ")}`);
+  const file = fs.readFileSync(new URL("./report.schema.json", import.meta.url), "utf8");
+  if (file !== schemaDocument()) throw new Error("Schema/runtime mismatch: report.schema.json");
   schemaReady = true;
 }
 
@@ -152,7 +244,7 @@ export function validateReport(report) {
   }
   if (report.scanner.staticOnly !== true) return { ok: false, reason: "scanner.staticOnly must be true" };
   if (report.scanner.executedTarget !== false) return { ok: false, reason: "scanner.executedTarget must be false" };
-  const targetText = plain(report.target, "target");
+  const targetText = safeScope(report.target, "target");
   if (targetText) return { ok: false, reason: targetText };
   if (!Number.isInteger(report.scanned) || report.scanned < 0) return { ok: false, reason: "scanned must be a non-negative integer" };
   if (!Number.isInteger(report.fileCount) || report.fileCount < 0) return { ok: false, reason: "fileCount must be a non-negative integer" };
@@ -165,11 +257,14 @@ export function validateReport(report) {
     if (!isObject(finding)) return { ok: false, reason: "finding must be an object" };
     const findingKeys = sameKeys(finding, FINDING_KEYS);
     if (findingKeys) return { ok: false, reason: `finding ${findingKeys}` };
-    for (const key of ["file", "rule", "label", "correction"]) {
-      const problem = plain(finding[key], `finding.${key}`);
-      if (problem) return { ok: false, reason: problem };
-    }
+    const ruleText = plain(finding.rule, "finding.rule");
+    if (ruleText) return { ok: false, reason: ruleText };
+    const fileScope = safeScope(finding.file, "finding.file");
+    if (fileScope) return { ok: false, reason: fileScope };
+    const rule = ruleById(finding.rule);
+    if (!rule) return { ok: false, reason: "finding.rule is not a known rule" };
     if (finding.severity !== "danger" && finding.severity !== "warn") return { ok: false, reason: "finding.severity must be danger or warn" };
+    if (!rule.severities.includes(finding.severity)) return { ok: false, reason: "finding.severity does not match rule" };
   }
 
   const hasDanger = report.findings.some((finding) => finding.severity === "danger");
@@ -179,38 +274,36 @@ export function validateReport(report) {
 
   if (!isObject(report.correction)) return { ok: false, reason: "correction must be an object" };
   const correctionKeys = sameKeys(report.correction, CORRECTION_KEYS);
-  if (correctionKeys) return { ok: false, reason: `correction ${correctionKeys}` };
+  if (correctionKeys) {
+    if (String(correctionKeys).includes("steps")) return { ok: false, reason: "correction.steps must match findings" };
+    return { ok: false, reason: `correction ${correctionKeys}` };
+  }
   if (report.correction.state !== VERDICT_STATE[report.verdict]) return { ok: false, reason: "correction.state does not match verdict" };
   const summary = plain(report.correction.summary, "correction.summary");
   if (summary) return { ok: false, reason: summary };
-  if (!Array.isArray(report.correction.steps)) return { ok: false, reason: "correction.steps must be an array" };
-  if (report.correction.steps.length !== report.findings.length) return { ok: false, reason: "correction.steps must match findings" };
-
-  for (let i = 0; i < report.correction.steps.length; i++) {
-    const step = report.correction.steps[i];
-    const finding = report.findings[i];
-    if (!isObject(step)) return { ok: false, reason: "correction step must be an object" };
-    const stepKeys = sameKeys(step, STEP_KEYS);
-    if (stepKeys) return { ok: false, reason: `correction step ${stepKeys}` };
-    if (step.file !== finding.file || step.rule !== finding.rule) return { ok: false, reason: "correction step does not match finding" };
-    const action = plain(step.action, "correction step action");
-    if (action) return { ok: false, reason: action };
-    if (step.action !== finding.correction) return { ok: false, reason: "correction step action must match finding correction" };
+  if (report.correction.summary !== SUMMARIES[report.correction.state]) {
+    return { ok: false, reason: "correction.summary is not the canonical summary" };
   }
-
   if (!isObject(report.correction.rescan)) return { ok: false, reason: "correction.rescan must be an object" };
-  const rescanKeys = sameKeys(report.correction.rescan, ["command"]);
-  if (rescanKeys) return { ok: false, reason: `rescan ${rescanKeys}` };
-  const command = report.correction.rescan.command;
-  const commandText = plain(command, "correction.rescan.command");
-  if (commandText) return { ok: false, reason: commandText };
-  if (!boundRescan(command, report.target)) {
+  if (Object.hasOwn(report.correction.rescan, "command") || report.correction.rescan.derived !== true) {
     return { ok: false, reason: "correction.rescan.command is not the canonical rescan" };
+  }
+  const rescanKeys = sameKeys(report.correction.rescan, ["derived"]);
+  if (rescanKeys) return { ok: false, reason: "correction.rescan.command is not the canonical rescan" };
+  const steps = derivedSteps(report.findings);
+  if (steps.length !== report.findings.length) return { ok: false, reason: "correction.steps must match findings" };
+  for (let i = 0; i < steps.length; i++) {
+    if (steps[i].file !== report.findings[i].file || steps[i].rule !== report.findings[i].rule) {
+      return { ok: false, reason: "correction step does not match finding" };
+    }
+    if (steps[i].action !== correctionFor(report.findings[i].rule)) {
+      return { ok: false, reason: "correction step action must match finding correction" };
+    }
   }
   return { ok: true };
 }
 
-export function buildReport(result, { reportPath } = {}) {
+export function buildReport(result) {
   if (!result || !Object.hasOwn(VERDICT_EXIT, result.verdict)) {
     throw new Error(`Rejected report: unknown verdict ${result && result.verdict}`);
   }
@@ -218,11 +311,8 @@ export function buildReport(result, { reportPath } = {}) {
     file: escapeTerminal(finding.file),
     rule: finding.rule,
     severity: finding.sev,
-    label: finding.label,
-    correction: correctionFor(finding.rule),
   }));
   const state = VERDICT_STATE[result.verdict];
-  const outPath = reportPath || "skillguard-report.json";
   const target = escapeTerminal(result.target);
   const report = {
     schema: SCHEMA_ID,
@@ -243,8 +333,7 @@ export function buildReport(result, { reportPath } = {}) {
     correction: {
       state,
       summary: SUMMARIES[state],
-      steps: findings.map((finding) => ({ file: finding.file, rule: finding.rule, action: finding.correction })),
-      rescan: { command: canonicalRescan(target, outPath) },
+      rescan: { derived: true },
     },
   };
   const check = validateReport(report);
@@ -296,9 +385,11 @@ export function readReport(filePath) {
   return data;
 }
 
-export function formatRetrieval(report) {
+export function formatRetrieval(report, reportPath) {
   const show = (value) => escapeTerminal(value);
+  const steps = derivedSteps(report.findings);
   const lines = [
+    UNVERIFIED_LABEL,
     "SkillGuard report retrieval",
     `schema: ${show(report.schema)}`,
     `target: ${show(report.target)}`,
@@ -310,12 +401,13 @@ export function formatRetrieval(report) {
     "",
     `Correction (${show(report.correction.state)})`,
   ];
-  if (!report.correction.steps.length) lines.push("  No file changes required.");
-  for (const step of report.correction.steps) {
+  if (!steps.length) lines.push("  No file changes required.");
+  for (const step of steps) {
     lines.push(`  ${show(step.file)} [${show(step.rule)}]`);
+    lines.push(`    ${show(labelFor(step.rule))}`);
     lines.push(`    ${show(step.action)}`);
   }
-  lines.push(`Rescan: ${show(report.correction.rescan.command)}`);
+  lines.push(`Rescan: ${show(canonicalRescan(report.target, reportPath))}`);
   lines.push(show(report.correction.summary));
   lines.push("");
   return lines.join("\n");

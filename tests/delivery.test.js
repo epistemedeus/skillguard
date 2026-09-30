@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyze } from "../index.js";
-import { buildReport, readReport, validateReport } from "../report.js";
+import { buildReport, correctionFor, derivedSteps, readReport, validateReport } from "../report.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "index.js");
@@ -107,8 +107,9 @@ test("manifest expectations match --json reports and the files were not executed
     assert.deepEqual(rules(report.findings, "danger"), [...fixture.expectDangerRules].sort());
     assert.deepEqual(rules(report.findings, "warn"), [...fixture.expectWarnRules].sort());
     assert.equal(report.correction.state, fixture.expectVerdict === "dangerous" ? "required" : "none");
-    assert.match(report.correction.rescan.command, /--report/);
-    assert.match(report.correction.rescan.command, /fixtures\/[^ ]+/);
+    assert.equal(report.correction.rescan.derived, true);
+    assert.equal(Object.hasOwn(report.correction.rescan, "command"), false);
+    assert.equal(report.correction.steps, undefined);
     assert.equal(fs.existsSync(marker), false);
   }
 });
@@ -125,9 +126,12 @@ test("scoped report can be retrieved and the correction path names the flagged f
     const stored = JSON.parse(fs.readFileSync(out, "utf8"));
     assert.equal(stored.findings[0].file, "SKILL.md");
     assert.equal(stored.findings[0].rule, "prompt-injection");
-    assert.equal(stored.correction.steps[0].action, stored.findings[0].correction);
+    const steps = derivedSteps(stored.findings);
+    assert.equal(steps[0].action, correctionFor(stored.findings[0].rule));
+    assert.equal(steps[0].file, stored.findings[0].file);
     const retrieved = run(["--show-report", out]);
-    assert.equal(retrieved.status, 3, retrieved.stdout + retrieved.stderr);
+    assert.equal(retrieved.status, 66, retrieved.stdout + retrieved.stderr);
+    assert.match(retrieved.stdout, /unverified:/);
     assert.match(retrieved.stdout, /SkillGuard report retrieval/);
     assert.match(retrieved.stdout, /verdict: dangerous/);
     assert.match(retrieved.stdout, /exitCode: 3/);
@@ -142,7 +146,7 @@ test("scoped report can be retrieved and the correction path names the flagged f
   }
 });
 
-test("env-exfil report retrieval exits 3 and lists both rules", () => {
+test("env-exfil scan exits 3 and retrieval is an unverified view", () => {
   const dir = path.join(fixturesDir, "env-exfil");
   const out = path.join(os.tmpdir(), `skillguard-report-${process.pid}-env.json`);
   try {
@@ -152,11 +156,13 @@ test("env-exfil report retrieval exits 3 and lists both rules", () => {
     assert.deepEqual(rules(report.findings, "danger"), ["env-exfil", "exfil-host"]);
     assert.match(report.correction.summary, /not a safety score/);
     const retrieved = run(["--show-report", out, "--json"]);
-    assert.equal(retrieved.status, 3);
+    assert.equal(retrieved.status, 66, retrieved.stdout + retrieved.stderr);
+    assert.match(retrieved.stderr, /unverified:/);
     const again = JSON.parse(retrieved.stdout);
     assert.equal(again.verdict, "dangerous");
     assert.equal(again.blanketSafetyScore, null);
-    assert.deepEqual(again.correction.steps.map((step) => step.rule).sort(), ["env-exfil", "exfil-host"]);
+    assert.equal(again.correction.rescan.derived, true);
+    assert.deepEqual(again.findings.map((finding) => finding.rule).sort(), ["env-exfil", "exfil-host"]);
   } finally {
     fs.rmSync(out, { force: true });
   }
@@ -245,7 +251,7 @@ test("missing report is rejected", () => {
 
 test("suspicious verdict maps to exit 2 and correction state review", () => {
   const report = buildReport({
-    target: "/tmp/example-skill",
+    target: "example-skill",
     scanned: 1,
     fileCount: 1,
     verdict: "suspicious",
@@ -257,7 +263,8 @@ test("suspicious verdict maps to exit 2 and correction state review", () => {
   assert.equal(report.blanketSafetyScore, null);
   assert.equal(report.scanner.executedTarget, false);
   const readBack = readReportBuffer(report);
-  assert.equal(readBack.correction.steps[0].rule, "shell-pipe");
+  assert.equal(derivedSteps(readBack.findings)[0].rule, "shell-pipe");
+  assert.equal(readBack.correction.rescan.derived, true);
 });
 
 test("published schema matches the report object and forbids a safety score", () => {

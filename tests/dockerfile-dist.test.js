@@ -55,7 +55,7 @@ test("image copy includes report.js and the pin copy list does not", () => {
   assert.deepEqual(pinSources, ["package.json", "index.js", "mcp.js"]);
   assert.equal(pinSources.includes("report.js"), false);
   assert.deepEqual(distSources, ["package.json", "index.js", "mcp.js", "report.js"]);
-  assert.deepEqual(headSources, ["package.json", "index.js", "mcp.js", "report.js", "report.schema.json", "version.js"]);
+  assert.deepEqual(headSources, ["package.json", "index.js", "mcp.js", "report.js", "report.schema.json", "version.js", "rules.js", "secrets.js"]);
   assert.match(pinDocker, /ENTRYPOINT \["node", "mcp\.js"\]/);
   assert.match(headDocker, /ENTRYPOINT \["node", "mcp\.js"\]/);
   assert.doesNotMatch(readFileSync(join(repo, "mcp.js"), "utf8"), /report\.js/);
@@ -93,6 +93,18 @@ test("image copy includes report.js and the pin copy list does not", () => {
     process.stdout.write(`ENV_FROM_ROOTFS_EXIT:${danger.status}\n`);
     assert.equal(danger.status, 3, danger.stderr);
     assert.equal(existsSync(join(envExfil, "EXECUTED")), false);
+
+    const shown = runCli(image, ["--show-report", reportPath]);
+    process.stdout.write(`HARMLESS_SHOW_EXIT:${shown.status}\n`);
+    assert.equal(shown.status, 66, shown.stdout + shown.stderr);
+    assert.match(shown.stdout, /unverified:/);
+    assert.equal(shown.stdout.includes("\u001b"), false);
+    const shownDanger = runCli(image, ["--show-report", envReport]);
+    process.stdout.write(`ENV_SHOW_EXIT:${shownDanger.status}\n`);
+    assert.equal(shownDanger.status, 66, shownDanger.stdout + shownDanger.stderr);
+    assert.match(shownDanger.stdout, /unverified:/);
+    assert.match(shownDanger.stdout, /verdict: dangerous/);
+    assert.doesNotMatch(shownDanger.stdout, /^unverified:.*\n0\n/);
 
     applyCopy(headSources.filter((name) => name !== "report.js"), omitted);
     assert.equal(existsSync(join(omitted, "report.js")), false);

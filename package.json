@@ -31,5 +31,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/epistemedeus/skillguard"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1"
   }
 }
