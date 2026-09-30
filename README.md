@@ -54,6 +54,21 @@ SkillGuard does **static analysis only**. It clones with `git clone` (hooks disa
 
 Exit code: `0` clean · `2` suspicious · `3` dangerous — so you can gate CI on it.
 
+## Scoped report
+
+`--report <file>` writes a scoped JSON report (`skillguard.report.v1`, schema in `report.schema.json`) and keeps the same exit code. `--json` prints that report on stdout. `--show-report <file>` reads a report back and prints the correction path for each flagged file.
+
+```bash
+npx github:epistemedeus/skillguard ./my-skill --report skillguard-report.json
+npx github:epistemedeus/skillguard --show-report skillguard-report.json
+```
+
+The report records the existing verdict (`clean`, `suspicious`, or `dangerous`). `blanketSafetyScore` is always null. There is no numeric safety score. A report that invents one, or whose verdict disagrees with its findings, is rejected. Retrieval of a dangerous report exits `3`.
+
+Write the report file outside the tree you are scanning. Finding labels quote the rule text and can match heuristics if you scan the report itself.
+
+`fixtures/` holds static samples (`harmless`, `prompt-injection`, `env-exfil`). Scan each directory with the CLI. Do not execute the files in those directories. `harmless` must exit `0`. The other two must exit `3`.
+
 ## Use it in CI (GitHub Action)
 
 Gate your CI on skill/MCP supply-chain safety:

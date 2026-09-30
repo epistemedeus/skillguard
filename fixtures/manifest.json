@@ -1,0 +1,37 @@
+{
+  "schema": "skillguard.fixture-manifest.v1",
+  "staticOnly": true,
+  "note": "Scan each directory with the SkillGuard CLI. Do not execute the files inside them.",
+  "fixtures": [
+    {
+      "id": "harmless",
+      "path": "harmless",
+      "expectExit": 0,
+      "expectVerdict": "clean",
+      "expectDangerRules": [],
+      "expectWarnRules": [],
+      "expectFileCount": 3,
+      "expectScanned": 3
+    },
+    {
+      "id": "prompt-injection",
+      "path": "prompt-injection",
+      "expectExit": 3,
+      "expectVerdict": "dangerous",
+      "expectDangerRules": ["prompt-injection"],
+      "expectWarnRules": [],
+      "expectFileCount": 3,
+      "expectScanned": 3
+    },
+    {
+      "id": "env-exfil",
+      "path": "env-exfil",
+      "expectExit": 3,
+      "expectVerdict": "dangerous",
+      "expectDangerRules": ["env-exfil", "exfil-host"],
+      "expectWarnRules": [],
+      "expectFileCount": 3,
+      "expectScanned": 3
+    }
+  ]
+}

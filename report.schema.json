@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skillguard.report.v1",
+  "title": "SkillGuard scoped report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generatedAt",
+    "scanner",
+    "target",
+    "scanned",
+    "fileCount",
+    "verdict",
+    "exitCode",
+    "blanketSafetyScore",
+    "findings",
+    "correction"
+  ],
+  "properties": {
+    "schema": { "const": "skillguard.report.v1" },
+    "generatedAt": { "type": "string", "minLength": 20 },
+    "scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "staticOnly", "executedTarget"],
+      "properties": {
+        "name": { "const": "skillguard" },
+        "version": { "type": "string", "minLength": 1 },
+        "staticOnly": { "const": true },
+        "executedTarget": { "const": false }
+      }
+    },
+    "target": { "type": "string", "minLength": 1 },
+    "scanned": { "type": "integer", "minimum": 0 },
+    "fileCount": { "type": "integer", "minimum": 0 },
+    "verdict": { "enum": ["clean", "suspicious", "dangerous"] },
+    "exitCode": { "enum": [0, 2, 3] },
+    "blanketSafetyScore": { "type": "null" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "rule", "severity", "label", "correction"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "rule": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["danger", "warn"] },
+          "label": { "type": "string", "minLength": 1 },
+          "correction": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "summary", "steps", "rescan"],
+      "properties": {
+        "state": { "enum": ["none", "review", "required"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "rule", "action"],
+            "properties": {
+              "file": { "type": "string", "minLength": 1 },
+              "rule": { "type": "string", "minLength": 1 },
+              "action": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "rescan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command"],
+          "properties": {
+            "command": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

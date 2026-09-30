@@ -8,8 +8,11 @@
 //   npx github:epistemedeus/skillguard <path-or-git-url>
 //   npx github:epistemedeus/skillguard https://github.com/owner/repo
 //   npx github:epistemedeus/skillguard ./my-skill
+//   npx github:epistemedeus/skillguard ./my-skill --report skillguard-report.json
+//   npx github:epistemedeus/skillguard --show-report skillguard-report.json
 //
 // Exit code: 0 = clean, 2 = suspicious, 3 = dangerous.
+// report.js is loaded only for --report / --json / --show-report. mcp.js does not import it.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -158,19 +161,49 @@ export function analyze(arg) {
   return { target: isUrl ? arg : path.resolve(arg), scanned, fileCount, verdict, dangers, warns, findings: norm };
 }
 
-function main() {
-  const arg = process.argv[2];
-  if (arg === "mcp") { import("./mcp.js"); return; } // run as an MCP server (stdio)
-  if (!arg) {
-    console.error(`${B}SkillGuard${R} — static security scanner for Claude Code skills, plugins & MCP servers.\n` +
-      `Usage: skillguard <path-or-git-url>\n  npx github:epistemedeus/skillguard https://github.com/owner/repo\n  npx github:epistemedeus/skillguard ./my-skill`);
-    process.exit(64);
-  }
-  if (/^(https?:\/\/|git@)/.test(arg)) process.stderr.write(`${DIM}Cloning (static, no install)…${R}\n`);
-  let res;
-  try { res = analyze(arg); }
-  catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
+function verdictExit(verdict) {
+  return verdict === "dangerous" ? 3 : verdict === "suspicious" ? 2 : 0;
+}
 
+function printUsage() {
+  console.error(`${B}SkillGuard${R} - static security scanner for Claude Code skills, plugins & MCP servers.\n` +
+    `Usage: skillguard <path-or-git-url> [--report <file>] [--json] [--badge]\n` +
+    `       skillguard --show-report <file>\n` +
+    `  npx github:epistemedeus/skillguard https://github.com/owner/repo\n` +
+    `  npx github:epistemedeus/skillguard ./my-skill\n` +
+    `Exit: 0 clean, 2 suspicious, 3 dangerous. A report is not a safety score.`);
+}
+
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  if (args[0] === "mcp") return { mcp: true };
+  const out = { target: null, badge: false, json: false, report: null, showReport: null, mcp: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--badge") { out.badge = true; continue; }
+    if (arg === "--json") { out.json = true; continue; }
+    if (arg === "--report") {
+      const file = args[i + 1];
+      if (!file || file.startsWith("-")) return { error: "--report needs a file path" };
+      out.report = file;
+      i++;
+      continue;
+    }
+    if (arg === "--show-report") {
+      const file = args[i + 1];
+      if (!file || file.startsWith("-")) return { error: "--show-report needs a file path" };
+      out.showReport = file;
+      i++;
+      continue;
+    }
+    if (arg.startsWith("-")) return { error: `Unknown option: ${arg}` };
+    if (out.target) return { error: "Only one target path or URL is accepted" };
+    out.target = arg;
+  }
+  return out;
+}
+
+function printHuman(res, badge) {
   console.log(`\n${B}SkillGuard report${R}  ${DIM}· ${res.scanned} text files scanned, ${res.fileCount} total${R}`);
   console.log(`${DIM}target: ${res.target}${R}\n`);
   const group = (list) => {
@@ -190,7 +223,7 @@ function main() {
   console.log(verdict);
   console.log(`${DIM}SkillGuard does static analysis only; it never executes the scanned code. Heuristics can miss novel attacks.\n` +
     `Want continuous re-scanning on every upstream release + a deeper manual audit? → https://samedaydesk.com/skillguard${R}\n`);
-  if (process.argv.includes("--badge")) {
+  if (badge) {
     if (res.verdict === "clean") {
       console.log(`${B}You passed — show it in your README:${R}\n` +
         `[![SkillGuard: no known malware](https://img.shields.io/badge/SkillGuard-no%20known%20malware-2ea44f)](https://github.com/epistemedeus/skillguard)\n`);
@@ -198,8 +231,76 @@ function main() {
       console.log(`${DIM}--badge: only a clean scan earns a badge; fix the findings above first.${R}\n`);
     }
   }
-  process.exit(res.verdict === "dangerous" ? 3 : res.verdict === "suspicious" ? 2 : 0);
+}
+
+async function main() {
+  const parsed = parseArgs(process.argv);
+  if (parsed.error) {
+    console.error(`${RED}${parsed.error}${R}`);
+    printUsage();
+    process.exit(64);
+  }
+  if (parsed.mcp) { await import("./mcp.js"); return; } // run as an MCP server (stdio)
+
+  if (parsed.showReport) {
+    if (parsed.target || parsed.report || parsed.badge) {
+      console.error(`${RED}--show-report only reads a report file. It does not scan.${R}`);
+      printUsage();
+      process.exit(64);
+    }
+    const { readReport, formatRetrieval, reportToJson } = await import("./report.js");
+    let report;
+    try { report = readReport(parsed.showReport); }
+    catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
+    if (parsed.json) process.stdout.write(reportToJson(report));
+    else process.stdout.write(formatRetrieval(report));
+    process.exit(report.exitCode);
+  }
+
+  if (!parsed.target) {
+    printUsage();
+    process.exit(64);
+  }
+  if (/^(https?:\/\/|git@)/.test(parsed.target)) process.stderr.write(`${DIM}Cloning (static, no install)…${R}\n`);
+  let res;
+  try { res = analyze(parsed.target); }
+  catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
+
+  if (!parsed.json && !parsed.report) {
+    printHuman(res, parsed.badge);
+    process.exit(verdictExit(res.verdict));
+  }
+
+  const { buildReport, writeReport, reportToJson, quoteArg } = await import("./report.js");
+  let report;
+  let written = null;
+  try {
+    const reportPath = parsed.report ? path.resolve(parsed.report) : null;
+    report = buildReport(res, { reportPath });
+    if (reportPath) written = writeReport(reportPath, report);
+  } catch (e) {
+    console.error(`${RED}${e.message}${R}`);
+    process.exit(res.verdict === "clean" ? 65 : verdictExit(res.verdict));
+  }
+
+  if (parsed.json) {
+    process.stdout.write(reportToJson(report));
+    if (parsed.badge) {
+      if (res.verdict === "clean") {
+        console.error("[![SkillGuard: no known malware](https://img.shields.io/badge/SkillGuard-no%20known%20malware-2ea44f)](https://github.com/epistemedeus/skillguard)");
+      } else {
+        console.error("--badge: only a clean scan earns a badge; fix the findings above first.");
+      }
+    }
+  } else {
+    printHuman(res, parsed.badge);
+    console.log(`${DIM}Scoped report: ${written}${R}`);
+    console.log(`${DIM}Retrieve: node index.js --show-report ${quoteArg(written)}${R}\n`);
+  }
+  process.exit(report.exitCode);
 }
 
 // Run the CLI only when invoked directly (so the MCP server can import analyze()).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => { console.error(`${RED}${e.message}${R}`); process.exit(65); });
+}

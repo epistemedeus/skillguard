@@ -11,6 +11,9 @@
   "engines": {
     "node": ">=18"
   },
+  "scripts": {
+    "test": "node --test tests/delivery.test.js"
+  },
   "license": "MIT",
   "keywords": [
     "mcp",
