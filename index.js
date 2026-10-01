@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { escapeTerminal, redactUrl } from "./version.js";
 import { labelFor } from "./rules.js";
 import { classifySecretText } from "./secrets.js";
@@ -340,7 +340,51 @@ async function main() {
   process.exit(report.exitCode);
 }
 
-// Run the CLI only when invoked directly (so the MCP server can import analyze()).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((e) => { console.error(`${RED}${e.message}${R}`); process.exit(65); });
+// A symlink argv does not match import.meta.url. Compare real paths so that
+// entry still runs. If this file was invoked and either path cannot be
+// resolved, exit 65. An empty exit 0 would look like a clean scan with no report.
+const NO_REPORT = "SkillGuard could not resolve its entrypoint; no report was produced.";
+
+export function cliInvoked(argv1 = process.argv[1]) {
+  if (!argv1) return false;
+  let selfPath = null;
+  try {
+    selfPath = fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    selfPath = null;
+  }
+  let argvPath = null;
+  try {
+    argvPath = fs.realpathSync(path.resolve(argv1));
+  } catch {
+    argvPath = null;
+  }
+  if (selfPath && argvPath) return selfPath === argvPath;
+  let lexical = false;
+  try {
+    lexical = pathToFileURL(path.resolve(argv1)).href === import.meta.url;
+  } catch {
+    lexical = false;
+  }
+  const argvBase = path.basename(argv1);
+  const selfBase = selfPath ? path.basename(selfPath) : "index.js";
+  const likelyEntry = lexical || argvBase === selfBase || argvBase === "skillguard";
+  if (likelyEntry) {
+    const error = new Error(NO_REPORT);
+    error.code = "unresolved-entry";
+    throw error;
+  }
+  return false;
+}
+
+try {
+  if (cliInvoked()) {
+    main().catch((e) => { console.error(`${RED}${e.message}${R}`); process.exit(65); });
+  }
+} catch (error) {
+  if (error && error.code === "unresolved-entry") {
+    console.error(`${RED}${error.message}${R}`);
+    process.exit(65);
+  }
+  throw error;
 }
