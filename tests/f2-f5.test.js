@@ -133,10 +133,74 @@ test("F4 a credential in a git URL is not stored in the report target", async ()
   assert.equal(stored.includes("secret-token"), false);
   assert.equal(stored.includes("user:"), false);
   assert.equal(stored, "https://github.com/owner/repo.git");
+  const withQuery = redactUrl("https://user:secret-token@github.com/owner/repo.git?access_token=query-secret#frag-secret");
+  assert.equal(withQuery.includes("secret-token"), false);
+  assert.equal(withQuery.includes("query-secret"), false);
+  assert.equal(withQuery.includes("frag-secret"), false);
+  assert.equal(withQuery.includes("?"), false);
+  assert.equal(withQuery.includes("#"), false);
+  assert.equal(withQuery, "https://github.com/owner/repo.git");
   const source = fs.readFileSync(path.join(root, "index.js"), "utf8");
   assert.match(source, /redactUrl\(/);
+  assert.match(source, /Could not clone the requested repository\./);
+  assert.equal(source.includes("Could not clone ${"), false);
+  assert.equal(source.includes("execFileSync"), true);
   const reportSource = fs.readFileSync(path.join(root, "report.js"), "utf8");
   assert.match(reportSource, /0o600/);
+});
+
+test("F4 a failed clone does not echo child diagnostics or URL secrets", () => {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "skillguard-fake-git-"));
+  const marker = path.join(binDir, "marker");
+  const fake = path.join(binDir, "git");
+  fs.writeFileSync(
+    fake,
+    `#!/bin/sh\nprintf '%s\\n' "seeded-diagnostic: $*" >> ${JSON.stringify(marker)}\necho "seeded-diagnostic: $*" >&2\nexit 23\n`,
+  );
+  fs.chmodSync(fake, 0o755);
+  const urls = [
+    "https://seed-user:seed-password@example.test/owner/repo.git",
+    "https://seed-user@example.test/owner/repo.git",
+    "https://:seed-password@example.test/owner/repo.git",
+    "https://example.test/owner/repo.git?access_token=seed-query",
+    "https://example.test/owner/repo.git#seed-fragment",
+    "https://seed-user:seed-password@example.test/owner/repo.git?access_token=seed-query#seed-fragment",
+  ];
+  try {
+    for (const url of urls) {
+      fs.rmSync(marker, { force: true });
+      const ran = spawnSync(process.execPath, [cli, url], {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 20000,
+        env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}` },
+      });
+      const blob = `${ran.stdout}\n${ran.stderr}`;
+      assert.equal(ran.status, 65, blob);
+      assert.match(blob, /Could not clone the requested repository/);
+      assert.equal(fs.existsSync(marker), true, "fake git was not invoked");
+      const invoked = fs.readFileSync(marker, "utf8");
+      assert.equal(invoked.includes(url), true);
+      assert.equal(invoked.includes("--depth"), true);
+      const forbidden = [
+        url,
+        "seed-user",
+        "seed-password",
+        "seed-query",
+        "seed-fragment",
+        "seeded-diagnostic",
+        "--depth",
+        "core.hooksPath",
+        "skillguard-",
+        "clone --depth",
+      ];
+      for (const secret of forbidden) {
+        assert.equal(blob.includes(secret), false, `output exposed ${secret}`);
+      }
+    }
+  } finally {
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
 });
 
 test("F5 package, registry manifest, report, and MCP share one version", () => {

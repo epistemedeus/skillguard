@@ -180,9 +180,10 @@ export function analyze(arg) {
       execFileSync("git", ["-c", "core.hooksPath=/dev/null", "clone", "--depth", "1", arg, tmp],
         { stdio: ["ignore", "ignore", "pipe"], timeout: 60000 });
       root = tmp;
-    } catch (e) {
+    } catch {
       try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-      throw new Error(`Could not clone ${redactUrl(arg)}: ${String(e.message).slice(0, 120)}`);
+      // Child diagnostics include the argv vector. Replace them; do not sanitize-and-append.
+      throw new Error("Could not clone the requested repository.");
     }
   }
   if (!fs.existsSync(root)) {

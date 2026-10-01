@@ -25,6 +25,8 @@ export function redactUrl(value) {
     const url = new URL(text);
     url.username = "";
     url.password = "";
+    url.search = "";
+    url.hash = "";
     return url.toString();
   } catch {
     return "redacted-url";
