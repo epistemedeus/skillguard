@@ -1,0 +1,630 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skillguard.report.v1",
+  "title": "SkillGuard scoped report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generatedAt",
+    "scanner",
+    "target",
+    "scanned",
+    "fileCount",
+    "verdict",
+    "exitCode",
+    "blanketSafetyScore",
+    "findings",
+    "correction"
+  ],
+  "properties": {
+    "schema": {
+      "const": "skillguard.report.v1"
+    },
+    "generatedAt": {
+      "type": "string",
+      "minLength": 20,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "staticOnly",
+        "executedTarget"
+      ],
+      "properties": {
+        "name": {
+          "const": "skillguard"
+        },
+        "version": {
+          "const": "1.3.0"
+        },
+        "staticOnly": {
+          "const": true
+        },
+        "executedTarget": {
+          "const": false
+        }
+      }
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "scanned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fileCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "verdict": {
+      "enum": [
+        "clean",
+        "suspicious",
+        "dangerous"
+      ]
+    },
+    "exitCode": {
+      "enum": [
+        0,
+        2,
+        3
+      ]
+    },
+    "blanketSafetyScore": {
+      "type": "null"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file",
+          "rule",
+          "severity"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "rule": {
+            "enum": [
+              "env-dump",
+              "env-exfil",
+              "exfil-host",
+              "obfuscation",
+              "shell-pipe",
+              "forced-artifact",
+              "secret-literal",
+              "prompt-injection",
+              "dangerous-perms",
+              "install-hook",
+              "committed-binary",
+              "symlink-escape"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "danger",
+              "warn"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "env-dump"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "warn",
+                    "danger"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "env-exfil"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "exfil-host"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "obfuscation"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "shell-pipe"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "warn"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "forced-artifact"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "secret-literal"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "prompt-injection"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "warn",
+                    "danger"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "dangerous-perms"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "warn"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "install-hook"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "warn"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "committed-binary"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "rule": {
+                  "const": "symlink-escape"
+                }
+              },
+              "required": [
+                "rule"
+              ]
+            },
+            "then": {
+              "properties": {
+                "severity": {
+                  "const": "warn"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "summary",
+        "rescan"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "none",
+            "review",
+            "required"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rescan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "derived"
+          ],
+          "properties": {
+            "derived": {
+              "const": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "clean"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "exitCode": {
+            "const": 0
+          },
+          "findings": {
+            "maxItems": 0
+          },
+          "correction": {
+            "properties": {
+              "state": {
+                "const": "none"
+              },
+              "summary": {
+                "const": "No flagged files. Re-scan after the tree changes. This report is not a safety score."
+              }
+            },
+            "required": [
+              "state",
+              "summary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "suspicious"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "exitCode": {
+            "const": 2
+          },
+          "findings": {
+            "minItems": 1,
+            "contains": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "const": "warn"
+                }
+              },
+              "required": [
+                "severity"
+              ]
+            },
+            "not": {
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "severity": {
+                    "const": "danger"
+                  }
+                },
+                "required": [
+                  "severity"
+                ]
+              }
+            }
+          },
+          "correction": {
+            "properties": {
+              "state": {
+                "const": "review"
+              },
+              "summary": {
+                "const": "Review each warning and edit the file if the pattern is unintended, then re-scan this target. This report is not a safety score."
+              }
+            },
+            "required": [
+              "state",
+              "summary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "dangerous"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "exitCode": {
+            "const": 3
+          },
+          "findings": {
+            "minItems": 1,
+            "contains": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              },
+              "required": [
+                "severity"
+              ]
+            }
+          },
+          "correction": {
+            "properties": {
+              "state": {
+                "const": "required"
+              },
+              "summary": {
+                "const": "Edit each flagged file, then re-scan this target. Do not install while the verdict is dangerous. This report is not a safety score."
+              }
+            },
+            "required": [
+              "state",
+              "summary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "findings": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "const": "danger"
+                }
+              },
+              "required": [
+                "severity"
+              ]
+            }
+          }
+        },
+        "required": [
+          "findings"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "const": "dangerous"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "findings": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "const": "warn"
+                }
+              },
+              "required": [
+                "severity"
+              ]
+            },
+            "not": {
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "severity": {
+                    "const": "danger"
+                  }
+                },
+                "required": [
+                  "severity"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "findings"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "const": "suspicious"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "findings": {
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "findings"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "const": "clean"
+          }
+        }
+      }
+    }
+  ]
+}

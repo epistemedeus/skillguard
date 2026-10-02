@@ -1,0 +1,6 @@
+{
+  "name": "fixture-prompt-injection",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Static SkillGuard fixture. Do not execute."
+}

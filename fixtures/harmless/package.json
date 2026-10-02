@@ -1,0 +1,6 @@
+{
+  "name": "fixture-harmless",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Static SkillGuard fixture. Do not execute."
+}

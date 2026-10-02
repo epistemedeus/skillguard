@@ -8,14 +8,20 @@
 //   npx github:epistemedeus/skillguard <path-or-git-url>
 //   npx github:epistemedeus/skillguard https://github.com/owner/repo
 //   npx github:epistemedeus/skillguard ./my-skill
+//   npx github:epistemedeus/skillguard ./my-skill --report skillguard-report.json
+//   npx github:epistemedeus/skillguard --show-report skillguard-report.json
 //
 // Exit code: 0 = clean, 2 = suspicious, 3 = dangerous.
+// report.js is loaded only for --report / --json / --show-report. mcp.js does not import it.
 
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { escapeTerminal, redactUrl } from "./version.js";
+import { labelFor } from "./rules.js";
+import { classifySecretText } from "./secrets.js";
 
 const RED = "\x1b[31m", YEL = "\x1b[33m", GRN = "\x1b[32m", DIM = "\x1b[2m", B = "\x1b[1m", R = "\x1b[0m", CY = "\x1b[36m";
 
@@ -46,7 +52,6 @@ const DOC_FILE = /\.(md|mdx|txt|rst)$/i;
 const PROMPT_INJ = /(ignore (all )?(previous|prior|above) (instructions|prompts|rules)|do not (tell|inform|reveal|mention|notify).{0,25}(the )?(user|human|operator)|exfiltrat\w+|send (the |your )?(\.?env|environment variables|secrets|api[_ ]?keys|credentials|\.env file)|read .{0,15}\.env.{0,40}(send|post|upload|exfil)|always (auto-?)?approve (all|every|any)|disregard (the |your )?(rules|guidelines|safety|instructions))/i;
 const INSTALL_HOOK = /"(pre|post)install"\s*:/;
 const DANGEROUS_FLAG = /(--dangerously-skip-permissions|"permissions"\s*:\s*"(\*|all)"|"?autoApproveAll"?\s*:\s*true|autoApprove\s*:\s*"(\*|all)"|disable[_-]?sandbox\s*[:=]\s*true|"?bypassPermissions"?\s*:\s*true)/i;
-const SECRET_LITERAL = /(sk-ant-[a-zA-Z0-9_\-]{24,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----|xox[baprs]-[0-9]{8,}-[0-9a-zA-Z]{8,})/;
 const FORCED_ARTIFACT = /(diagnostic\/[^\s"']*\.logd|encryptly|commit[^\n]{0,30}(diagnostic|encrypted) (blob|artifact|file)|python3? build\.py[^\n]{0,40}commit)/i;
 
 const RULES = [
@@ -65,7 +70,7 @@ const RULES = [
   { id: "forced-artifact", sev: "danger", label: "Honeypot pattern: build step that generates/commits an encrypted artifact",
     test: t => FORCED_ARTIFACT.test(t) },
   { id: "secret-literal", sev: "danger", label: "Hardcoded credential / private key committed in the repo",
-    test: t => SECRET_LITERAL.test(t) },
+    test: (t, f) => classifySecretText(t, f).class === "real-secret" },
   { id: "prompt-injection", sev: f => (INSTRUCTION_FILE.test(f) || CODE_FILE.test(f)) ? "danger" : "warn",
     label: "Prompt-injection / data-exfil instruction in text (high risk in SKILL.md / tool descriptions; in changelogs/READMEs it may just be docs discussing it)",
     test: (t, f) => PROMPT_INJ.test(t) && /\.(md|mdx|json|ya?ml|txt|py|js|ts)$/i.test(f) },
@@ -98,10 +103,36 @@ function walk(dir, out = []) {
     }
     if (SKIP_DIRS.has(e.name)) continue;
     const p = path.join(dir, e.name);
+    if (e.isSymbolicLink()) { out.push(p); continue; }
     if (e.isDirectory()) walk(p, out);
     else out.push(p);
   }
   return out;
+}
+
+function symlinkEscapes(root, linkPath) {
+  let dest;
+  try {
+    dest = fs.realpathSync(linkPath);
+  } catch {
+    try { dest = path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath)); }
+    catch { return true; }
+  }
+  let realRoot;
+  try { realRoot = fs.realpathSync(root); }
+  catch { realRoot = path.resolve(root); }
+  const relToRoot = path.relative(realRoot, dest);
+  return relToRoot !== "" && (relToRoot.startsWith("..") || path.isAbsolute(relToRoot));
+}
+
+export function publicTarget(arg) {
+  if (/^(https?:\/\/|git@)/.test(arg)) return redactUrl(arg);
+  const abs = path.resolve(arg);
+  const relToCwd = path.relative(process.cwd(), abs);
+  if (relToCwd && !relToCwd.startsWith("..") && !path.isAbsolute(relToCwd)) {
+    return relToCwd.split(path.sep).join("/");
+  }
+  return path.basename(abs) || "target";
 }
 
 function scanDir(root) {
@@ -109,10 +140,19 @@ function scanDir(root) {
   const findings = [];
   let binaries = 0, scanned = 0;
   for (const f of files) {
+    let listed;
+    try { listed = fs.lstatSync(f); } catch { continue; }
+    if (listed.isSymbolicLink()) {
+      if (symlinkEscapes(root, f)) {
+        findings.push({ file: f, rule: "symlink-escape", sev: "warn",
+          label: labelFor("symlink-escape") });
+      }
+      continue;
+    }
     let buf;
     try { buf = fs.readFileSync(f); } catch { continue; }
     if (looksBinary(buf)) { binaries++; findings.push({ file: f, rule: "committed-binary", sev: "danger",
-      label: "Committed executable binary (a compiled artifact that the build may run)" }); continue; }
+      label: labelFor("committed-binary") }); continue; }
     if (!TEXT_EXT.test(f) && buf.length > 200000) continue; // skip big non-text
     const text = buf.toString("utf8");
     scanned++;
@@ -120,7 +160,7 @@ function scanDir(root) {
       try {
         if (!r.test(text, f)) continue;
         const sev = typeof r.sev === "function" ? r.sev(f, text) : r.sev;
-        if (sev) findings.push({ file: f, rule: r.id, sev, label: r.label });
+        if (sev) findings.push({ file: f, rule: r.id, sev, label: labelFor(r.id) });
       } catch {}
     }
   }
@@ -140,44 +180,75 @@ export function analyze(arg) {
       execFileSync("git", ["-c", "core.hooksPath=/dev/null", "clone", "--depth", "1", arg, tmp],
         { stdio: ["ignore", "ignore", "pipe"], timeout: 60000 });
       root = tmp;
-    } catch (e) {
+    } catch {
       try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-      throw new Error(`Could not clone ${arg}: ${String(e.message).slice(0, 120)}`);
+      // Child diagnostics include the argv vector. Replace them; do not sanitize-and-append.
+      throw new Error("Could not clone the requested repository.");
     }
   }
   if (!fs.existsSync(root)) {
     if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-    throw new Error(`Path not found: ${root}`);
+    throw new Error(`Path not found: ${publicTarget(arg)}`);
   }
   const { findings, scanned, fileCount } = scanDir(root);
-  const norm = findings.map(x => ({ file: rel(root, x.file), rule: x.rule, sev: x.sev, label: x.label }));
+  const norm = findings.map(x => ({ file: escapeTerminal(rel(root, x.file)), rule: x.rule, sev: x.sev, label: x.label }));
   if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
   const dangers = norm.filter(f => f.sev === "danger");
   const warns = norm.filter(f => f.sev === "warn");
   const verdict = dangers.length ? "dangerous" : warns.length ? "suspicious" : "clean";
-  return { target: isUrl ? arg : path.resolve(arg), scanned, fileCount, verdict, dangers, warns, findings: norm };
+  return { target: escapeTerminal(publicTarget(arg)), scanned, fileCount, verdict, dangers, warns, findings: norm };
 }
 
-function main() {
-  const arg = process.argv[2];
-  if (arg === "mcp") { import("./mcp.js"); return; } // run as an MCP server (stdio)
-  if (!arg) {
-    console.error(`${B}SkillGuard${R} — static security scanner for Claude Code skills, plugins & MCP servers.\n` +
-      `Usage: skillguard <path-or-git-url>\n  npx github:epistemedeus/skillguard https://github.com/owner/repo\n  npx github:epistemedeus/skillguard ./my-skill`);
-    process.exit(64);
-  }
-  if (/^(https?:\/\/|git@)/.test(arg)) process.stderr.write(`${DIM}Cloning (static, no install)…${R}\n`);
-  let res;
-  try { res = analyze(arg); }
-  catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
+function verdictExit(verdict) {
+  return verdict === "dangerous" ? 3 : verdict === "suspicious" ? 2 : 0;
+}
 
+function printUsage() {
+  console.error(`${B}SkillGuard${R} - static security scanner for Claude Code skills, plugins & MCP servers.\n` +
+    `Usage: skillguard <path-or-git-url> [--report <file>] [--json] [--badge]\n` +
+    `       skillguard --show-report <file>\n` +
+    `  npx github:epistemedeus/skillguard https://github.com/owner/repo\n` +
+    `  npx github:epistemedeus/skillguard ./my-skill\n` +
+    `Exit: 0 clean, 2 suspicious, 3 dangerous. A report is not a safety score.`);
+}
+
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  if (args[0] === "mcp") return { mcp: true };
+  const out = { target: null, badge: false, json: false, report: null, showReport: null, mcp: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--badge") { out.badge = true; continue; }
+    if (arg === "--json") { out.json = true; continue; }
+    if (arg === "--report") {
+      const file = args[i + 1];
+      if (!file || file.startsWith("-")) return { error: "--report needs a file path" };
+      out.report = file;
+      i++;
+      continue;
+    }
+    if (arg === "--show-report") {
+      const file = args[i + 1];
+      if (!file || file.startsWith("-")) return { error: "--show-report needs a file path" };
+      out.showReport = file;
+      i++;
+      continue;
+    }
+    if (arg.startsWith("-")) return { error: `Unknown option: ${arg}` };
+    if (out.target) return { error: "Only one target path or URL is accepted" };
+    out.target = arg;
+  }
+  return out;
+}
+
+function printHuman(res, badge) {
   console.log(`\n${B}SkillGuard report${R}  ${DIM}· ${res.scanned} text files scanned, ${res.fileCount} total${R}`);
-  console.log(`${DIM}target: ${res.target}${R}\n`);
+  console.log(`${DIM}target: ${escapeTerminal(res.target)}${R}\n`);
   const group = (list) => {
     const byFile = {};
     for (const x of list) (byFile[x.file] ||= []).push(x);
     for (const [file, fs_] of Object.entries(byFile)) {
-      console.log(`  ${CY}${file}${R}`);
+      console.log(`  ${CY}${escapeTerminal(file)}${R}`);
       for (const x of fs_) console.log(`    ${x.sev === "danger" ? RED + "■" : YEL + "▲"} ${x.label}${R} ${DIM}[${x.rule}]${R}`);
     }
   };
@@ -190,7 +261,7 @@ function main() {
   console.log(verdict);
   console.log(`${DIM}SkillGuard does static analysis only; it never executes the scanned code. Heuristics can miss novel attacks.\n` +
     `Want continuous re-scanning on every upstream release + a deeper manual audit? → https://samedaydesk.com/skillguard${R}\n`);
-  if (process.argv.includes("--badge")) {
+  if (badge) {
     if (res.verdict === "clean") {
       console.log(`${B}You passed — show it in your README:${R}\n` +
         `[![SkillGuard: no known malware](https://img.shields.io/badge/SkillGuard-no%20known%20malware-2ea44f)](https://github.com/epistemedeus/skillguard)\n`);
@@ -198,8 +269,78 @@ function main() {
       console.log(`${DIM}--badge: only a clean scan earns a badge; fix the findings above first.${R}\n`);
     }
   }
-  process.exit(res.verdict === "dangerous" ? 3 : res.verdict === "suspicious" ? 2 : 0);
+}
+
+async function main() {
+  const parsed = parseArgs(process.argv);
+  if (parsed.error) {
+    console.error(`${RED}${parsed.error}${R}`);
+    printUsage();
+    process.exit(64);
+  }
+  if (parsed.mcp) { await import("./mcp.js"); return; } // run as an MCP server (stdio)
+
+  if (parsed.showReport) {
+    if (parsed.target || parsed.report || parsed.badge) {
+      console.error(`${RED}--show-report only reads a report file. It does not scan.${R}`);
+      printUsage();
+      process.exit(64);
+    }
+    const { readReport, formatRetrieval, reportToJson, UNVERIFIED_EXIT, UNVERIFIED_LABEL } = await import("./report.js");
+    let report;
+    try { report = readReport(parsed.showReport); }
+    catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
+    if (parsed.json) {
+      process.stderr.write(`${UNVERIFIED_LABEL}\n`);
+      process.stdout.write(reportToJson(report));
+    } else process.stdout.write(formatRetrieval(report, parsed.showReport));
+    process.exit(UNVERIFIED_EXIT);
+  }
+
+  if (!parsed.target) {
+    printUsage();
+    process.exit(64);
+  }
+  if (/^(https?:\/\/|git@)/.test(parsed.target)) process.stderr.write(`${DIM}Cloning (static, no install)…${R}\n`);
+  let res;
+  try { res = analyze(parsed.target); }
+  catch (e) { console.error(`${RED}${e.message}${R}`); process.exit(65); }
+
+  if (!parsed.json && !parsed.report) {
+    printHuman(res, parsed.badge);
+    process.exit(verdictExit(res.verdict));
+  }
+
+  const { buildReport, writeReport, reportToJson, quoteArg } = await import("./report.js");
+  let report;
+  let written = null;
+  try {
+    const reportPath = parsed.report ? path.resolve(parsed.report) : null;
+    report = buildReport(res, { reportPath });
+    if (reportPath) written = writeReport(reportPath, report);
+  } catch (e) {
+    console.error(`${RED}${e.message}${R}`);
+    process.exit(res.verdict === "clean" ? 65 : verdictExit(res.verdict));
+  }
+
+  if (parsed.json) {
+    process.stdout.write(reportToJson(report));
+    if (parsed.badge) {
+      if (res.verdict === "clean") {
+        console.error("[![SkillGuard: no known malware](https://img.shields.io/badge/SkillGuard-no%20known%20malware-2ea44f)](https://github.com/epistemedeus/skillguard)");
+      } else {
+        console.error("--badge: only a clean scan earns a badge; fix the findings above first.");
+      }
+    }
+  } else {
+    printHuman(res, parsed.badge);
+    console.log(`${DIM}Scoped report: ${written}${R}`);
+    console.log(`${DIM}Retrieve: node index.js --show-report ${quoteArg(written)}${R}\n`);
+  }
+  process.exit(report.exitCode);
 }
 
 // Run the CLI only when invoked directly (so the MCP server can import analyze()).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => { console.error(`${RED}${e.message}${R}`); process.exit(65); });
+}
