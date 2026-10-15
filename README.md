@@ -80,6 +80,8 @@ Give your agent the ability to vet a skill/MCP server before installing it. Add 
 }
 ```
 
+Note: install from GitHub as shown (`github:epistemedeus/skillguard`). The npm name `skillguard` is not this package; `npx skillguard` will not run SkillGuard.
+
 It exposes one tool, `scan_skill(target)`, where `target` is a local path or a git/GitHub URL. Your agent can then check anything it's about to install. (Static-only — it never runs the scanned code.)
 
 ## Show that you passed

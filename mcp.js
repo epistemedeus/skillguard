@@ -16,7 +16,7 @@ const err = (id, code, message) => send({ jsonrpc: "2.0", id, error: { code, mes
 
 const TOOL = {
   name: "scan_skill",
-  description: "Statically scan a Claude Code skill, plugin, or MCP server (a local path or a git/GitHub URL) for malware patterns BEFORE installing it: secret/env exfiltration to suspicious hosts, install-time (pre/postinstall) hooks, obfuscated remote execution (eval(atob), base64|sh), prompt injection in tool descriptions/SKILL.md, committed binaries, and auto-approve/skip-permission configs. Static-only — it clones and reads files, never executes the target code, so scanning something malicious is safe. Returns a verdict (clean/suspicious/dangerous) with the flagged files.",
+  description: "Statically scan a Claude Code skill, plugin, or MCP server (a local path or a git/GitHub URL) for malware patterns BEFORE installing it: secret/env exfiltration to suspicious hosts, install-time (pre/postinstall) hooks, obfuscated remote execution (eval(atob), base64|sh), prompt injection in tool descriptions/SKILL.md, committed binaries, and auto-approve/skip-permission configs. Static-only — it clones and reads files, never executes the target code, so scanning something malicious is safe. Returns a verdict (clean/suspicious/dangerous) with the flagged files. Not the right fit for known-CVE dependency audits (use npm audit / osv-scanner), runtime sandboxing, or proving code is safe: clean means no known malware pattern matched.",
   inputSchema: {
     type: "object",
     properties: { target: { type: "string", description: "A local path or a git/GitHub URL to scan, e.g. https://github.com/owner/repo or ./my-skill" } },
@@ -36,7 +36,7 @@ rl.on("line", (line) => {
     return ok(id, {
       protocolVersion: (params && params.protocolVersion) || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "skillguard", version: "1.2.0" },
+      serverInfo: { name: "skillguard", version: "1.3.0" },
       instructions: "Use scan_skill to vet a Claude Code skill, plugin, or MCP server before installing it.",
     });
   }
