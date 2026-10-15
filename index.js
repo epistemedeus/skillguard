@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const RED = "\x1b[31m", YEL = "\x1b[33m", GRN = "\x1b[32m", DIM = "\x1b[2m", B = "\x1b[1m", R = "\x1b[0m", CY = "\x1b[36m";
 
@@ -201,5 +201,16 @@ function main() {
   process.exit(res.verdict === "dangerous" ? 3 : res.verdict === "suspicious" ? 2 : 0);
 }
 
-// Run the CLI only when invoked directly (so the MCP server can import analyze()).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+// Run the CLI only when this file is the process entry. npx's bin is a symlink
+// to index.js; import.meta.url is the real file and argv[1] is the symlink, so a
+// string compare skips main() and the process exits 0 without scanning.
+function invokedAsCli() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(entry);
+  } catch {
+    return false;
+  }
+}
+if (invokedAsCli()) main();
